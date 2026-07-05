@@ -1,0 +1,29 @@
+# ── Entire ignored folders ─────────────────────────────────────────────────
+tumor_marker_app/
+statistics/results/
+
+# ── Data files ─────────────────────────────────────────────────────────────
+**/*.xlsx
+**/*.xls
+**/*.csv
+
+# ── Result / output files ──────────────────────────────────────────────────
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.pdf
+
+# ── Python virtual environments ────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Python cache ───────────────────────────────────────────────────────────
+__pycache__/
+**/*.pyc
+**/*.pyo
+.ipynb_checkpoints/
+
+# ── OS noise ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
