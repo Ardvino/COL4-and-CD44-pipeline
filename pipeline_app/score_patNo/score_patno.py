@@ -22,6 +22,7 @@ class ScorePatNoResult:
     rows_before_filter: int
     rows_after_filter: int
     duplicate_patient_count: int      # patients with more than one core (Score_2, ...)
+    sheet_name_fixes: list            # [(map_sheet, score_file_label, score_sheet), ...] — see _normalize_sheet_key
     per_score_tables: dict            # {label: DataFrame} — one sheet per score file
     summary_table: object             # DataFrame — All_Scores_Summary
     output_file: Path
@@ -37,6 +38,17 @@ def read_all_cells(wb):
                 if cell.value is not None:
                     rows.append((sheet_name, cell.row, cell.column, cell.value))
     return pd.DataFrame(rows, columns=["sheet", "row", "col", "value"])
+
+
+def _normalize_sheet_key(name):
+    """Collapse runs of whitespace/underscores into a single underscore, so
+    e.g. a score file's "AN_VERR 1" and the map's "AN_VERR_1" are still
+    treated as the same sheet during the position join. Without this, a
+    single typo'd space in one source file silently drops every position on
+    that sheet from every score file's join -- no error, no warning, just a
+    quietly smaller "matched" count.
+    """
+    return re.sub(r"[\s_]+", "_", str(name).strip())
 
 
 def _natural_key(s):
@@ -131,20 +143,34 @@ def run_score_patno(data_dir=None, map_file=None, output_file=None):
     map_wb = load_workbook(map_path, data_only=True)
     map_df = read_all_cells(map_wb)
     map_df = map_df.rename(columns={"value": "Patient_No"})
+    map_df["_sheet_key"] = map_df["sheet"].map(_normalize_sheet_key)
+    map_sheet_names = set(map_df["sheet"])
 
     # Load scores from each file and join by position
     score_dfs = {}
+    sheet_name_fixes = []
     for fname in score_files:
         label = os.path.splitext(fname)[0]
         score_wb = load_workbook(data_dir / fname, data_only=True)
         sc_df = read_all_cells(score_wb).rename(columns={"value": label})
+        sc_df["_sheet_key"] = sc_df["sheet"].map(_normalize_sheet_key)
         score_dfs[label] = sc_df
 
-    # Merge all on position key
+        for score_sheet in sorted(set(sc_df["sheet"])):
+            if score_sheet in map_sheet_names:
+                continue
+            key = _normalize_sheet_key(score_sheet)
+            for map_sheet in map_sheet_names:
+                if _normalize_sheet_key(map_sheet) == key:
+                    sheet_name_fixes.append((map_sheet, label, score_sheet))
+
+    # Merge all on position key (normalized sheet name + row + col) --
+    # joining on _sheet_key rather than the raw "sheet" column is what
+    # tolerates the kind of mismatch sheet_name_fixes reports above.
     combined = map_df.copy()
     for label, sc_df in score_dfs.items():
-        combined = combined.merge(sc_df[["sheet", "row", "col", label]],
-                                  on=["sheet", "row", "col"], how="left")
+        combined = combined.merge(sc_df[["_sheet_key", "row", "col", label]],
+                                  on=["_sheet_key", "row", "col"], how="left")
 
     # Convert score columns to numeric
     score_labels = list(score_dfs.keys())
@@ -197,6 +223,7 @@ def run_score_patno(data_dir=None, map_file=None, output_file=None):
         rows_before_filter=rows_before_filter,
         rows_after_filter=rows_after_filter,
         duplicate_patient_count=duplicate_patient_count,
+        sheet_name_fixes=sheet_name_fixes,
         per_score_tables=per_score_tables,
         summary_table=summary_df,
         output_file=output_file,
@@ -206,6 +233,11 @@ def run_score_patno(data_dir=None, map_file=None, output_file=None):
 def _print_result(result):
     print(f"Saved: {result.output_file}")
     print(f"Sheets: {result.score_labels + ['All_Scores_Summary']}")
+    if result.sheet_name_fixes:
+        print(f"\nNote: {len(result.sheet_name_fixes)} sheet-name mismatch(es) tolerated "
+              f"(matched anyway by normalizing spaces/underscores):")
+        for map_sheet, label, score_sheet in result.sheet_name_fixes:
+            print(f"  map sheet {map_sheet!r} <-> {label} sheet {score_sheet!r}")
 
 
 if __name__ == "__main__":

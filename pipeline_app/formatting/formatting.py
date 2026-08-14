@@ -22,6 +22,12 @@ class FormattingResult:
     workbook: object = field(repr=False)  # the saved openpyxl Workbook (post-replacement)
 
 
+# Accepted spellings for the patient-number column in the lookup file,
+# checked in order -- 'pat_no' is the original convention, 'pat_num' has
+# shown up in newer copies of the lookup spreadsheet.
+PAT_NO_COLUMN_ALIASES = ("pat_no", "pat_num")
+
+
 def build_lookup(lookup_file):
     """Read every sheet of the YP -> patient-number lookup file into one dict.
 
@@ -34,13 +40,14 @@ def build_lookup(lookup_file):
     for sheet in xl.sheet_names:
         df = xl.parse(sheet)
         df.columns = df.columns.str.strip().str.lower()
-        has_cols = "pat_no" in df.columns and "yp_num" in df.columns
+        pat_no_col = next((c for c in PAT_NO_COLUMN_ALIASES if c in df.columns), None)
+        has_cols = pat_no_col is not None and "yp_num" in df.columns
         sheets_info.append((sheet, list(df.columns), len(df), has_cols))
         if not has_cols:
             continue
         for _, row in df.iterrows():
             yp = str(row["yp_num"]).strip()
-            pat = str(row["pat_no"]).strip()
+            pat = str(row[pat_no_col]).strip()
             lookup[yp] = pat
     return lookup, sheets_info
 

@@ -183,10 +183,10 @@ def render_nat_cohort():
             [(nat, "(A) All NAT patients"),
              (strong, "(B) Strong NAT response (<=10% RTC)"),
              (weak, "(C) Weak NAT response (>=11% RTC)")],
-            col["dss_time"], col["dss_event"], col["mmp8"], labels, theme,
-            suptitle=f'{bm["name"]} and Disease-Specific Survival (DSS) — NAT cohort',
+            col["os_time"], col["os_event"], col["mmp8"], labels, theme,
+            suptitle=f'{bm["name"]} and Overall Survival (OS) — NAT cohort',
         ),
-        key_prefix=f"km-nat-{biomarker_key}", file_slug=f"KM_{biomarker_key}_DSS_NAT",
+        key_prefix=f"km-nat-{biomarker_key}", file_slug=f"KM_{biomarker_key}_OS_NAT",
     )
 
     st.subheader("Univariable Cox regression")
@@ -204,8 +204,8 @@ def render_nat_cohort():
     _show_csv(nat_dir, "cox_multivariable_NAT.csv")
     render_themed_plot(
         lambda theme: stats.themed_forest_figure(
-            nat, col["dss_time"], col["dss_event"], mv_covariates,
-            "Multivariable Cox Regression - DSS (all NAT patients)", theme,
+            nat, col["os_time"], col["os_event"], mv_covariates,
+            "Multivariable Cox Regression - OS (all NAT patients)", theme,
         ),
         key_prefix=f"forest-nat-{biomarker_key}", file_slug=f"ForestPlot_{biomarker_key}_NAT",
     )
@@ -215,14 +215,14 @@ def render_nat_cohort():
     render_themed_plot(
         lambda theme: stats.themed_km_figure(
             [(gem, "(A) Gemcitabine"), (folf, "(B) FOLFIRINOX")],
-            col["dss_time"], col["dss_event"], col["nat_resp"], resp_labels, theme,
-            suptitle="NAT Response and DSS by Regimen",
+            col["os_time"], col["os_event"], col["nat_resp"], resp_labels, theme,
+            suptitle="NAT Response and OS by Regimen",
         ),
         key_prefix=f"km-regimen-{biomarker_key}", file_slug=f"KM_{biomarker_key}_regimen_subgroup",
     )
 
     st.subheader("Group summary")
-    st.caption("Median DSS is the Kaplan-Meier median survival time, which correctly accounts for censoring.")
+    st.caption("Median OS is the Kaplan-Meier median survival time, which correctly accounts for censoring.")
     _show_csv(nat_dir, "group_summary.csv")
 
 
@@ -234,11 +234,11 @@ def render_upfront_cohort():
     render_themed_plot(
         lambda theme: stats.themed_km_figure(
             [(upfront, "Upfront surgery patients")],
-            col["dss_time"], col["dss_event"], col["mmp8"], labels, theme,
-            suptitle=f'{bm["name"]} and Disease-Specific Survival (DSS) — Upfront surgery',
+            col["os_time"], col["os_event"], col["mmp8"], labels, theme,
+            suptitle=f'{bm["name"]} and Overall Survival (OS) — Upfront surgery',
             figsize=(7, 6),
         ),
-        key_prefix=f"km-upfront-{biomarker_key}", file_slug=f"KM_{biomarker_key}_DSS_upfront",
+        key_prefix=f"km-upfront-{biomarker_key}", file_slug=f"KM_{biomarker_key}_OS_upfront",
     )
 
     st.subheader("Univariable Cox regression")
@@ -248,8 +248,8 @@ def render_upfront_cohort():
     _show_csv(upfront_dir, "cox_multivariable_upfront.csv")
     render_themed_plot(
         lambda theme: stats.themed_forest_figure(
-            upfront, col["dss_time"], col["dss_event"], mv_covariates,
-            "Multivariable Cox Regression - DSS (upfront surgery patients)", theme,
+            upfront, col["os_time"], col["os_event"], mv_covariates,
+            "Multivariable Cox Regression - OS (upfront surgery patients)", theme,
         ),
         key_prefix=f"forest-upfront-{biomarker_key}", file_slug=f"ForestPlot_{biomarker_key}_upfront",
     )

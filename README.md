@@ -7,7 +7,7 @@ Analysis pipeline for tissue microarray (TMA) scoring and survival statistics in
 ```
 formatting/          →   score_patNo/         →   statistics/
 YP-number map            patient score table       KM + Cox regression
-(TMA positions)          (one row per patient)     (DSS, biomarker, NAT)
+(TMA positions)          (one row per patient)     (OS, biomarker, NAT)
 ```
 
 1. **`formatting/`** — replaces anonymous YP-numbers in the raw TMA block map with real patient numbers, producing `tma_map_replaced.xlsx`.
@@ -96,7 +96,7 @@ python score_patno.py
 
 ### `pipeline_app/statistics/statistics.py`
 
-Replication of statistical methods from Kesti et al. (2025) (*Scientific Reports*). Analyses disease-specific survival (DSS) in NAT-treated and upfront-surgery PDAC patients stratified by a chosen biomarker and NAT response.
+Replication of statistical methods from Kesti et al. (2025) (*Scientific Reports*). Analyses overall survival (OS) in NAT-treated and upfront-surgery PDAC patients stratified by a chosen biomarker and NAT response. (Kesti et al. used disease-specific survival (DSS) as the endpoint — this pipeline uses OS instead.)
 
 The script supports multiple biomarkers (`MMP8`, `CD44_SFF_inflam_cells`, `CD44_SFF_tumor_int`, `CD44_VFF_tumor_int`, `COL_4_stroma`) and three low/high dichotomization methods (`fixed`, `median`, `p75` — see `DICHOTOMIZATION_METHODS` in the script).
 

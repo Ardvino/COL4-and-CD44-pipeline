@@ -17,8 +17,10 @@ in the script, in the order the script executes them.
 ## 1. What question is being asked?
 
 Does **high vs low expression of a given biomarker** in pancreatic ductal
-adenocarcinoma (PDAC) tumor tissue predict **disease-specific survival
-(DSS)** — i.e. time until death from PDAC?
+adenocarcinoma (PDAC) tumor tissue predict **overall survival
+(OS)** — i.e. time until death from any cause? (Kesti et al. (2025) used
+disease-specific survival (DSS, death from PDAC only) as their endpoint;
+this pipeline uses OS instead.)
 
 The script answers this separately for two patient groups, because biology
 and treatment context differ between them:
@@ -89,7 +91,7 @@ next to each:
 | Received NAT | `NEOADJUVANTTI` | 1 = NAT, 0 = upfront surgery |
 | Biomarker group | *(depends on `ACTIVE_BIOMARKER`)* | 0 = low, 1 = high |
 | NAT response | `NATvaste_hyvä_012vs345` | 1 = strong (≤10% residual tumor cells), 0 = weak (≥11% RTC) |
-| DSS event | `dss_event_binary` (derived) | 1 = died of PDAC, 0 = censored (alive or died of other cause) |
+| OS event | `os_event_binary` (derived) | 1 = died (any cause), 0 = alive/censored |
 | Survival time | `Survival_Months` | months of follow-up |
 | Age | `AGE_OPER` | years at surgery |
 | Sex | `SUKUPUOLI` | 1 = male, 2 = female (verified against `Sukupuoli_tunnus` text column) |
@@ -103,11 +105,13 @@ next to each:
 place you need to edit them** — everything downstream just uses the `col[...]`
 dictionary keys.
 
-The raw `DSS` column itself is coded `1` = died of PDAC, `2` = alive, `3` =
-died of another cause; `prepare_cohort_dataset()` converts this to the
-binary `dss_event_binary` (`1` if `DSS == 1`, else `0`) used by every
-survival model. **This is a key line to check**: any other DSS coding
-scheme in a future dataset version would silently break this.
+The raw `OS` column is already coded as a binary event (`1` = died of any
+cause, `0` = alive) in `sorted_data.xlsx`, so `prepare_cohort_dataset()`
+just carries it through as `os_event_binary`, used by every survival model.
+**This is a key column to check**: a different OS coding scheme in a future
+dataset version would silently break this. (The raw `DSS` column — `1` =
+died of PDAC, `2` = alive, `3` = died of another cause — is not used by
+this pipeline; it's the original paper's endpoint, not this one's.)
 
 ---
 
@@ -118,10 +122,10 @@ scheme in a future dataset version would silently break this.
 1. **`load_data()`** — reads both spreadsheets, merges them, computes the
    median-split binary column for every biomarker (see §2).
 2. **`prepare_cohort_dataset(df, col, nat_flag=1 or 0)`** — filters to one
-   cohort, builds `dss_event_binary`, dummy-codes grade into `Grade_2` /
+   cohort, builds `os_event_binary`, dummy-codes grade into `Grade_2` /
    `Grade_3` (reference = grade 1, so Cox models don't assume the 1→2 and
    2→3 steps have equal, linear effects on hazard — see §7), and drops any
-   patient missing the biomarker score, `DSS`, or survival time (prints how
+   patient missing the biomarker score, `OS`, or survival time (prints how
    many patients were dropped at each stage — check these counts against
    your expectations).
 3. **NAT cohort analysis** (`run_nat_cohort_analysis`):
@@ -139,8 +143,8 @@ scheme in a future dataset version would silently break this.
      model) — plus a forest plot and a proportional-hazards check.
    - Kaplan-Meier by NAT regimen (gemcitabine vs FOLFIRINOX), each showing
      strong vs weak response survival within that regimen.
-   - Summary table: patient counts, biomarker distribution, DSS events,
-     median DSS per group.
+   - Summary table: patient counts, biomarker distribution, OS events,
+     median OS per group.
 4. **Upfront surgery cohort analysis** (`run_upfront_cohort_analysis`) — the
    same logic, minus anything tied to NAT response/regimen (which don't
    apply to patients who never received NAT):
@@ -161,7 +165,7 @@ results/<ACTIVE_BIOMARKER>/
 ├── analysis_log.txt                        # everything printed to console, for both cohorts
 ├── NAT_cohort/
 │   ├── chi_square_results.csv
-│   ├── KM_<biomarker>_DSS_NAT.png           # 3-panel KM: all / strong / weak responders
+│   ├── KM_<biomarker>_OS_NAT.png            # 3-panel KM: all / strong / weak responders
 │   ├── cox_univariable_all_NAT.csv
 │   ├── cox_univariable_strong_responders.csv
 │   ├── cox_univariable_weak_responders.csv
@@ -171,7 +175,7 @@ results/<ACTIVE_BIOMARKER>/
 │   └── group_summary.csv
 └── Upfront_surgery_cohort/
     ├── chi_square_results.csv
-    ├── KM_<biomarker>_DSS_upfront.png
+    ├── KM_<biomarker>_OS_upfront.png
     ├── cox_univariable_upfront.csv
     ├── cox_multivariable_upfront.csv
     ├── ForestPlot_multivariable_upfront.png
@@ -211,7 +215,7 @@ respect to a clinical variable (sex, stage, grade, regimen, NAT response).
   multivariable Cox model (it already is, for age/sex/stage/grade/CA19-9).
 
 ### Kaplan-Meier plots (`KM_*.png`)
-Each curve shows the probability of *not yet* having died of PDAC, over
+Each curve shows the probability of *not yet* having died (of any cause), over
 time, for one biomarker group. Curves that separate and stay apart suggest
 a survival difference; overlapping curves suggest none. The risk table
 underneath shows, at each time point, how many patients are still being
@@ -240,7 +244,7 @@ If a model has fewer than 10 events, or fails to converge, the row is
 flagged (`sig` column explains why) instead of showing a HR — with that few
 events the estimate isn't trustworthy.
 
-- **HR (hazard ratio)**: relative risk of death from PDAC at any given
+- **HR (hazard ratio)**: relative risk of death (any cause) at any given
   moment, for the higher-coded group vs the reference (e.g. biomarker
   "high" [1] vs "low" [0]).
   - HR = 1: no difference.
@@ -283,7 +287,7 @@ factor, versus just riding on a correlated clinical variable.
 
 ### Summary table (`group_summary.csv`)
 Descriptive: how many patients are in each group, what fraction are
-biomarker-low/-high, how many DSS events occurred, and median DSS —
+biomarker-low/-high, how many OS events occurred, and median OS —
 computed as the **Kaplan-Meier median survival time** (the time at which
 the fitted survival curve crosses 0.5), with a 95% CI derived from the KM
 curve's own confidence band. This correctly accounts for censoring, unlike

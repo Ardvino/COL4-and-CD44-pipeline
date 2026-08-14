@@ -15,6 +15,11 @@ analyzed for the selected biomarker (high vs low expression):
 All figures, CSV result tables, and a text log are written to a
 per-biomarker output folder (results/<ACTIVE_BIOMARKER>/) so that runs for
 different biomarkers never overwrite each other.
+
+Endpoint: overall survival (OS) -- death from any cause, using the
+pre-coded `OS` column in sorted_data.xlsx (1=died, 0=alive). This differs
+from Kesti et al. (2025)'s own endpoint, disease-specific survival (DSS,
+death from PDAC only) -- OS was substituted throughout by request.
 """
 
 import re
@@ -234,8 +239,8 @@ def build_column_map(biomarker_col):
         'nat':       'NEOADJUVANTTI',              # 1=received neoadjuvant therapy, 0=upfront surgery
         'mmp8':      biomarker_col,                # set by biomarker selector above; 0=low, 1=high expression
         'nat_resp':  'NATvaste_hyvä_012vs345',     # 1=strong(<=10% RTC), 0=weak(>=11% RTC)
-        'dss_event': 'dss_event_binary',           # derived below: 1=died of PDAC, 0=censored/other
-        'dss_time':  'Survival_Months',            # follow-up time, used as the survival-analysis time axis
+        'os_event':  'os_event_binary',             # derived below: 1=died (any cause), 0=alive/censored
+        'os_time':   'Survival_Months',             # follow-up time, used as the survival-analysis time axis
         'age':       'AGE_OPER',                   # age at surgery, in years (continuous)
         'sex':       'SUKUPUOLI',                  # 1=male (mies), 2=female (nainen)
         'stage':     'STAGE_8th_Binary',           # binarized AJCC 8th edition stage, 0 vs 1 (see original data prep for cut point)
@@ -249,14 +254,14 @@ def build_column_map(biomarker_col):
 def prepare_cohort_dataset(df_raw, col, nat_flag):
     """
     Restrict to one treatment cohort (NAT or upfront surgery), derive the
-    DSS event flag, and drop rows missing biomarker/survival data.
+    OS event flag, and drop rows missing biomarker/survival data.
     nat_flag: 1 to keep NAT patients, 0 to keep upfront-surgery patients.
     """
     cohort = df_raw[df_raw[col['nat']] == nat_flag].copy()
     emit(f'Patients in cohort: {len(cohort)}')
 
-    # DSS column is coded 1=died of PDAC, 2=alive, 3=died of other cause -> convert to binary
-    cohort['dss_event_binary'] = (cohort['DSS'] == 1).astype(int)
+    # OS column is already coded as a binary event: 1=died (any cause), 0=alive
+    cohort['os_event_binary'] = cohort['OS'].astype(int)
 
     # Dummy-code histological grade (reference = grade 1) instead of entering
     # GRADUS directly as a continuous covariate in Cox models, which would
@@ -265,9 +270,9 @@ def prepare_cohort_dataset(df_raw, col, nat_flag):
     cohort['Grade_2'] = np.where(grade_raw.isna(), np.nan, (grade_raw == 2).astype(float))
     cohort['Grade_3'] = np.where(grade_raw.isna(), np.nan, (grade_raw == 3).astype(float))
 
-    cohort = cohort.dropna(subset=[col['mmp8'], 'DSS', col['dss_time']])
+    cohort = cohort.dropna(subset=[col['mmp8'], 'OS', col['os_time']])
     emit(f'Patients after dropping missing biomarker/survival: {len(cohort)}')
-    emit(f'DSS events (died of PDAC): {cohort[col["dss_event"]].sum()}')
+    emit(f'OS events (died, any cause): {cohort[col["os_event"]].sum()}')
 
     return cohort
 
@@ -315,7 +320,7 @@ def km_plot(df, time_col, event_col, group_col, group_labels,
     group_labels: dict {group_value: label_string}
 
     The step curves show the estimated probability of remaining event-free
-    (disease-specific survival) over time for each group; a curve that stays
+    (overall survival) over time for each group; a curve that stays
     higher for longer indicates better survival for that group. The
     log-rank test compares the two full curves (not a single time point) and
     p < 0.05 means the two groups' survival experiences differ significantly.
@@ -365,7 +370,7 @@ def km_plot(df, time_col, event_col, group_col, group_labels,
 
     ax.set_title(f'{title}\nLog-rank p = {lr.p_value:.3f}', fontsize=11)
     ax.set_xlabel('Time (months)')
-    ax.set_ylabel('Disease-specific survival')
+    ax.set_ylabel('Overall survival')
     ax.set_ylim(0, 1.05)
     ax.legend(loc='upper right', fontsize=9)
 
@@ -528,11 +533,11 @@ def multivariable_cox_table(df, time_col, event_col, covariates, output_dir, csv
 # ============================================================
 def group_summary_table(groups, col, biomarker_name, output_dir, filename):
     """
-    Patient counts, biomarker distribution, and Kaplan-Meier median DSS per
+    Patient counts, biomarker distribution, and Kaplan-Meier median OS per
     group.
     groups: dict {label: dataframe}
 
-    Median DSS is the Kaplan-Meier median survival time (the time at which
+    Median OS is the Kaplan-Meier median survival time (the time at which
     the fitted survival curve crosses 0.5), not the median follow-up time
     among patients who died — that simpler statistic ignores censoring and
     is generally shorter/biased whenever a meaningful fraction of patients
@@ -544,10 +549,10 @@ def group_summary_table(groups, col, biomarker_name, output_dir, filename):
         n = len(df)
         low = (df[col['mmp8']] == 0).sum()
         high = (df[col['mmp8']] == 1).sum()
-        events = df[col['dss_event']].sum()
+        events = df[col['os_event']].sum()
 
         kmf = KaplanMeierFitter()
-        kmf.fit(df[col['dss_time']], event_observed=df[col['dss_event']])
+        kmf.fit(df[col['os_time']], event_observed=df[col['os_event']])
         med_surv = kmf.median_survival_time_
         med_ci = median_survival_times(kmf.confidence_interval_)
         med_lo, med_hi = med_ci.iloc[0, 0], med_ci.iloc[0, 1]
@@ -559,10 +564,10 @@ def group_summary_table(groups, col, biomarker_name, output_dir, filename):
             f'{biomarker_name} low %': round(100 * low / n, 0) if n else np.nan,
             f'{biomarker_name} high': high,
             f'{biomarker_name} high %': round(100 * high / n, 0) if n else np.nan,
-            'DSS events': events,
-            'Median DSS, KM (mo)': round(med_surv, 1) if pd.notna(med_surv) else np.nan,
-            'Median DSS 95% CI lower': round(med_lo, 1) if pd.notna(med_lo) else np.nan,
-            'Median DSS 95% CI upper': round(med_hi, 1) if pd.notna(med_hi) else np.nan,
+            'OS events': events,
+            'Median OS, KM (mo)': round(med_surv, 1) if pd.notna(med_surv) else np.nan,
+            'Median OS 95% CI lower': round(med_lo, 1) if pd.notna(med_lo) else np.nan,
+            'Median OS 95% CI upper': round(med_hi, 1) if pd.notna(med_hi) else np.nan,
         })
 
     result = pd.DataFrame(rows)
@@ -608,18 +613,18 @@ def run_nat_cohort_analysis(df_raw, col, biomarker_name, active_biomarker, outpu
 
     # --- 4. Kaplan-Meier survival analyses. Replicates Figure 2 (A, B, C). ---
     fig, axes = plt.subplots(1, 3, figsize=(16, 6))
-    fig.suptitle(f'{biomarker_name} and Disease-Specific Survival (DSS) — NAT cohort', fontsize=13, y=1.02)
+    fig.suptitle(f'{biomarker_name} and Overall Survival (OS) — NAT cohort', fontsize=13, y=1.02)
 
     labels = BIOMARKER_CONFIGS[active_biomarker]['labels']
-    km_plot(nat, col['dss_time'], col['dss_event'], col['mmp8'], labels,
+    km_plot(nat, col['os_time'], col['os_event'], col['mmp8'], labels,
             title='(A) All NAT patients', ax=axes[0])
-    km_plot(strong, col['dss_time'], col['dss_event'], col['mmp8'], labels,
+    km_plot(strong, col['os_time'], col['os_event'], col['mmp8'], labels,
             title='(B) Strong NAT response (<=10% RTC)', ax=axes[1])
-    km_plot(weak, col['dss_time'], col['dss_event'], col['mmp8'], labels,
+    km_plot(weak, col['os_time'], col['os_event'], col['mmp8'], labels,
             title='(C) Weak NAT response (>=11% RTC)', ax=axes[2])
 
     plt.tight_layout()
-    out_path = output_dir / f'KM_{active_biomarker}_DSS_NAT.png'
+    out_path = output_dir / f'KM_{active_biomarker}_OS_NAT.png'
     plt.savefig(out_path, bbox_inches='tight')
     plt.close(fig)
     emit(f'Figure saved as {out_path}')
@@ -627,7 +632,7 @@ def run_nat_cohort_analysis(df_raw, col, biomarker_name, active_biomarker, outpu
     # --- 5. Univariable Cox regression. Replicates Table 3. ---
     emit('\n=== UNIVARIABLE COX - ALL NAT PATIENTS ===')
     univariable_cox_table(
-        nat, col['dss_time'], col['dss_event'],
+        nat, col['os_time'], col['os_event'],
         variables=[
             (col['mmp8'], f'{biomarker_name} (low vs high)'),
             (col['nat_resp'], 'NAT response (strong vs weak)'),
@@ -642,14 +647,14 @@ def run_nat_cohort_analysis(df_raw, col, biomarker_name, active_biomarker, outpu
 
     emit(f'\n=== UNIVARIABLE COX - STRONG RESPONDERS ONLY (n={len(strong)}) ===')
     univariable_cox_table(
-        strong, col['dss_time'], col['dss_event'],
+        strong, col['os_time'], col['os_event'],
         variables=[(col['mmp8'], f'{biomarker_name} (low vs high)')],
         output_dir=output_dir, filename='cox_univariable_strong_responders.csv',
     )
 
     emit(f'\n=== UNIVARIABLE COX - WEAK RESPONDERS ONLY (n={len(weak)}) ===')
     univariable_cox_table(
-        weak, col['dss_time'], col['dss_event'],
+        weak, col['os_time'], col['os_event'],
         variables=[(col['mmp8'], f'{biomarker_name} (low vs high)')],
         output_dir=output_dir, filename='cox_univariable_weak_responders.csv',
     )
@@ -657,26 +662,26 @@ def run_nat_cohort_analysis(df_raw, col, biomarker_name, active_biomarker, outpu
     # --- 6. Multivariable Cox regression. Replicates Table 4 (full NAT group only). ---
     emit('\n=== MULTIVARIABLE COX - ALL NAT PATIENTS ===')
     multivariable_cox_table(
-        nat, col['dss_time'], col['dss_event'],
+        nat, col['os_time'], col['os_event'],
         covariates=[col['mmp8'], col['age'], col['sex'], col['stage'], *col['grade_dummies'], col['logca199']],
         output_dir=output_dir,
         csv_filename='cox_multivariable_NAT.csv',
         plot_filename='ForestPlot_multivariable_NAT.png',
-        plot_title='Multivariable Cox Regression - DSS (all NAT patients)',
+        plot_title='Multivariable Cox Regression - OS (all NAT patients)',
     )
 
     # --- 7. Subgroup analysis by NAT regimen. Replicates Figure 4. ---
-    emit('\n=== NAT RESPONSE AND DSS BY REGIMEN ===')
+    emit('\n=== NAT RESPONSE AND OS BY REGIMEN ===')
     gem = nat[nat[col['regimen']] == 0]
     folf = nat[nat[col['regimen']] == 1]
     emit(f'Gemcitabine: {len(gem)}   FOLFIRINOX: {len(folf)}')
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-    fig.suptitle('NAT Response and DSS by Regimen', fontsize=13)
+    fig.suptitle('NAT Response and OS by Regimen', fontsize=13)
     resp_labels = {1: 'Strong response (<=10%)', 0: 'Weak response (>=11%)'}
-    km_plot(gem, col['dss_time'], col['dss_event'], col['nat_resp'], resp_labels,
+    km_plot(gem, col['os_time'], col['os_event'], col['nat_resp'], resp_labels,
             title='(A) Gemcitabine', ax=axes[0])
-    km_plot(folf, col['dss_time'], col['dss_event'], col['nat_resp'], resp_labels,
+    km_plot(folf, col['os_time'], col['os_event'], col['nat_resp'], resp_labels,
             title='(B) FOLFIRINOX', ax=axes[1])
     plt.tight_layout()
     out_path = output_dir / 'KM_regimen_subgroup.png'
@@ -723,12 +728,12 @@ def run_upfront_cohort_analysis(df_raw, col, biomarker_name, active_biomarker, o
 
     # --- Kaplan-Meier survival analysis: biomarker low vs high ---
     fig, ax = plt.subplots(figsize=(7, 6))
-    fig.suptitle(f'{biomarker_name} and Disease-Specific Survival (DSS) — Upfront surgery', fontsize=12, y=1.02)
+    fig.suptitle(f'{biomarker_name} and Overall Survival (OS) — Upfront surgery', fontsize=12, y=1.02)
     labels = BIOMARKER_CONFIGS[active_biomarker]['labels']
-    km_plot(upfront, col['dss_time'], col['dss_event'], col['mmp8'], labels,
+    km_plot(upfront, col['os_time'], col['os_event'], col['mmp8'], labels,
             title='Upfront surgery patients', ax=ax)
     plt.tight_layout()
-    out_path = output_dir / f'KM_{active_biomarker}_DSS_upfront.png'
+    out_path = output_dir / f'KM_{active_biomarker}_OS_upfront.png'
     plt.savefig(out_path, bbox_inches='tight')
     plt.close(fig)
     emit(f'Figure saved as {out_path}')
@@ -736,7 +741,7 @@ def run_upfront_cohort_analysis(df_raw, col, biomarker_name, active_biomarker, o
     # --- Univariable Cox regression ---
     emit('\n=== UNIVARIABLE COX - UPFRONT SURGERY PATIENTS ===')
     univariable_cox_table(
-        upfront, col['dss_time'], col['dss_event'],
+        upfront, col['os_time'], col['os_event'],
         variables=[
             (col['mmp8'], f'{biomarker_name} (low vs high)'),
             (col['age'], 'Age at surgery'),
@@ -751,12 +756,12 @@ def run_upfront_cohort_analysis(df_raw, col, biomarker_name, active_biomarker, o
     # --- Multivariable Cox regression ---
     emit('\n=== MULTIVARIABLE COX - UPFRONT SURGERY PATIENTS ===')
     multivariable_cox_table(
-        upfront, col['dss_time'], col['dss_event'],
+        upfront, col['os_time'], col['os_event'],
         covariates=[col['mmp8'], col['age'], col['sex'], col['stage'], *col['grade_dummies'], col['logca199']],
         output_dir=output_dir,
         csv_filename='cox_multivariable_upfront.csv',
         plot_filename='ForestPlot_multivariable_upfront.png',
-        plot_title='Multivariable Cox Regression - DSS (upfront surgery patients)',
+        plot_title='Multivariable Cox Regression - OS (upfront surgery patients)',
     )
 
     # --- Summary table ---
@@ -779,9 +784,9 @@ def export_patient_data(df_raw, col, output_dir):
     """
     export = df_raw.copy()
 
-    # Keep DSS event as NaN when DSS is missing rather than defaulting to 0
-    export['dss_event_binary'] = np.where(
-        export['DSS'].isna(), np.nan, (export['DSS'] == 1).astype(float)
+    # Keep OS event as NaN when OS is missing rather than defaulting to 0
+    export['os_event_binary'] = np.where(
+        export['OS'].isna(), np.nan, export['OS'].astype(float)
     )
 
     export['_biomarker_group']      = export[col['mmp8']].map({0: 'Low', 1: 'High'})
@@ -797,8 +802,8 @@ def export_patient_data(df_raw, col, output_dir):
 
     # Drop rows where any required field is missing
     missing_mask = (
-        export[col['dss_time']].isna()
-        | export['dss_event_binary'].isna()
+        export[col['os_time']].isna()
+        | export['os_event_binary'].isna()
         | export[col['mmp8']].isna()
     )
     if missing_mask.any():
@@ -809,8 +814,8 @@ def export_patient_data(df_raw, col, output_dir):
 
     result = export[[
         'PotNo',
-        col['dss_time'],
-        'dss_event_binary',
+        col['os_time'],
+        'os_event_binary',
         '_biomarker_group',
         '_treatment_group',
         '_treatment_response',
@@ -822,8 +827,8 @@ def export_patient_data(df_raw, col, output_dir):
         col['logca199'],
     ]].rename(columns={
         'PotNo':                 'patient_id',
-        col['dss_time']:         'follow_up_months',
-        'dss_event_binary':      'event_observed',
+        col['os_time']:          'follow_up_months',
+        'os_event_binary':       'event_observed',
         '_biomarker_group':      'biomarker_group',
         '_treatment_group':      'treatment_group',
         '_treatment_response':   'treatment_response',

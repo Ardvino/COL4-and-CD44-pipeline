@@ -26,7 +26,7 @@ st.markdown(
 ```
 formatting/          →   score_patNo/         →   statistics/
 YP-number map            patient score table       KM + Cox regression
-(TMA positions)          (one row per patient)     (DSS, biomarker, NAT)
+(TMA positions)          (one row per patient)     (OS, biomarker, NAT)
 ```
 """
 )
