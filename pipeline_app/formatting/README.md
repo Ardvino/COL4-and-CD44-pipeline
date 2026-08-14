@@ -36,7 +36,7 @@ A copy of `merged_map.xlsx` with every matched YP-number replaced by the corresp
 ## Running
 
 ```bash
-cd formatting
+cd pipeline_app/formatting
 python formatting.py
 ```
 

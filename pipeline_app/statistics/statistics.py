@@ -17,6 +17,7 @@ per-biomarker output folder (results/<ACTIVE_BIOMARKER>/) so that runs for
 different biomarkers never overwrite each other.
 """
 
+import re
 import sys
 from io import StringIO
 from pathlib import Path
@@ -82,7 +83,7 @@ BIOMARKER_HIGH_CUTOFF = {
 #   'CD44_VFF_tumor_int'    - CD44, VFF, tumour intensity
 #   'COL_4_stroma'          - COL-4, stroma
 # ============================================================
-ACTIVE_BIOMARKER = 'CD44_VFF_tumor_int'  # change this to switch biomarkers
+ACTIVE_BIOMARKER = 'COL_4_stroma'  # change this to switch biomarkers
 
 BIOMARKER_CONFIGS = {
     'MMP8': {
@@ -133,8 +134,41 @@ def emit_table(df, label=None):
 # ============================================================
 # Data loading
 # ============================================================
-def load_data():
-    """Load the raw clinical dataset and the biomarker score workbook."""
+# How to change the low/high split for the CD44/COL-4 scores: pick one of
+# these three method keys and pass it as `dichotomization=` to load_data()
+# or main() (or as the 2nd command-line argument -- see __main__ below).
+# MMP-8 is unaffected either way -- it already has a pre-coded binary column
+# in sorted_data.xlsx (see BIOMARKER_CONFIGS), so it never goes through this.
+#   'fixed'  (default) -- BIOMARKER_HIGH_CUTOFF's fixed, pre-specified
+#            cut-point per biomarker (score >= 2), matching the Kesti et al.
+#            (2025) MMP-8 convention. Does NOT depend on this sample's
+#            distribution -- see the module docstring for why this is the
+#            default over a sample-derived split.
+#   'median' -- splits at this sample's own median score for that biomarker
+#            (high := score >= median).
+#   'p75'    -- splits at this sample's own 75th-percentile score instead of
+#            the median (high := score >= 75th percentile).
+# 'median'/'p75' are sample-derived, so switching biomarkers or datasets can
+# shift the cut-point itself, not just the resulting counts. These are
+# coarse 0-3 ordinal scores with heavy ties, so a meaningful fraction of
+# patients can land exactly on a sample-derived cut -- that tied count is
+# logged below so you can see how much it matters for a given method/sample.
+DICHOTOMIZATION_METHODS = {
+    'fixed':  'Fixed clinical cut-point (score >= 2 per biomarker)',
+    'median': 'Sample median split (high := score >= median)',
+    'p75':    'Sample 75th-percentile split (high := score >= 75th percentile)',
+}
+
+
+def load_data(dichotomization='fixed'):
+    """Load the raw clinical dataset and the biomarker score workbook, and
+    dichotomize each CD44/COL-4 score into low/high using `dichotomization`
+    (a key in DICHOTOMIZATION_METHODS -- see that dict for what each does).
+    """
+    if dichotomization not in DICHOTOMIZATION_METHODS:
+        raise ValueError(f'Unknown dichotomization "{dichotomization}". '
+                          f'Choose one of: {list(DICHOTOMIZATION_METHODS)}')
+
     df_raw = pd.read_excel(DATA_PATH)
     emit(f'Total rows: {len(df_raw)}')
 
@@ -154,13 +188,12 @@ def load_data():
         suffixes=('', '_score'),
     )
     emit(f'Rows after merge: {len(df_raw)}')
+    emit(f'Dichotomization method: {dichotomization} -- {DICHOTOMIZATION_METHODS[dichotomization]}')
 
-    # Dichotomize each score using a fixed, pre-specified cut-point (see
-    # BIOMARKER_HIGH_CUTOFF) rather than a sample-derived median -- these
-    # scores are coarse 0-3 IHC intensity categories with heavy ties at the
-    # median, so a median split produces an arbitrary and unstable low/high
-    # boundary. The same cut-point is applied to both NAT and upfront
-    # patients, since it doesn't depend on either cohort's distribution.
+    # The cut-point is applied to both NAT and upfront patients the same
+    # way, since none of the three methods depends on either cohort's own
+    # distribution (median/p75 are computed across all patients with a
+    # valid score for that biomarker, not per cohort).
     biomarker_score_cols = [c for c in scores_summary.columns if c != 'Patient_No']
     for bm in biomarker_score_cols:
         # A handful of raw readings are data-entry sentinels outside the
@@ -172,12 +205,22 @@ def load_data():
                  f'set to NaN (PotNo: {df_raw.loc[bad, "PotNo"].tolist()})')
             df_raw.loc[bad, bm] = np.nan
 
-        cutoff = BIOMARKER_HIGH_CUTOFF[bm]
+        if dichotomization == 'fixed':
+            cutoff = BIOMARKER_HIGH_CUTOFF[bm]
+        elif dichotomization == 'median':
+            cutoff = df_raw[bm].median()
+        else:  # 'p75'
+            cutoff = df_raw[bm].quantile(0.75)
+
         df_raw[f'{bm}_binary'] = (df_raw[bm] >= cutoff).astype(float)
         df_raw.loc[df_raw[bm].isna(), f'{bm}_binary'] = np.nan
         n_low = (df_raw[f'{bm}_binary'] == 0).sum()
         n_high = (df_raw[f'{bm}_binary'] == 1).sum()
-        emit(f'{bm}: cutoff=score>={cutoff}  low={n_low}  high={n_high}')
+        tied_note = ''
+        if dichotomization != 'fixed':
+            n_tied = int((df_raw[bm] == cutoff).sum())
+            tied_note = f'  (tied at cutoff, counted as high: {n_tied})'
+        emit(f'{bm}: cutoff=score>={cutoff:g}  low={n_low}  high={n_high}{tied_note}')
 
     return df_raw
 
@@ -724,9 +767,215 @@ def run_upfront_cohort_analysis(df_raw, col, biomarker_name, active_biomarker, o
 
 
 # ============================================================
+# Patient-level data export
+# ============================================================
+def export_patient_data(df_raw, col, output_dir):
+    """
+    Build and save patient_data.csv covering all patients (NAT and upfront
+    surgery) in the standard template format.
+
+    Columns that don't apply to upfront-surgery patients (treatment_response,
+    chemotherapy_regimen) are left empty for those rows.
+    """
+    export = df_raw.copy()
+
+    # Keep DSS event as NaN when DSS is missing rather than defaulting to 0
+    export['dss_event_binary'] = np.where(
+        export['DSS'].isna(), np.nan, (export['DSS'] == 1).astype(float)
+    )
+
+    export['_biomarker_group']      = export[col['mmp8']].map({0: 'Low', 1: 'High'})
+    export['_treatment_group']      = export[col['nat']].map({1: 'Neoadjuvant', 0: 'Upfront surgery'})
+    export['_treatment_response']   = export[col['nat_resp']].map({1: 'Strong', 0: 'Weak'})
+    export['_chemotherapy_regimen'] = export[col['regimen']].map({0: 'Gemcitabine', 1: 'FOLFIRINOX'})
+    export['_sex']                  = export[col['sex']].map({1: 'Male', 2: 'Female'})
+    export['_disease_stage']        = export[col['stage']].map({0: 'Early', 1: 'Advanced'})
+
+    is_upfront = export[col['nat']] != 1
+    export.loc[is_upfront, '_treatment_response']   = ''
+    export.loc[is_upfront, '_chemotherapy_regimen'] = ''
+
+    # Drop rows where any required field is missing
+    missing_mask = (
+        export[col['dss_time']].isna()
+        | export['dss_event_binary'].isna()
+        | export[col['mmp8']].isna()
+    )
+    if missing_mask.any():
+        emit(f'export_patient_data: dropping {missing_mask.sum()} row(s) with '
+             f'missing follow_up_months, event_observed, or biomarker score '
+             f'(PotNo: {export.loc[missing_mask, "PotNo"].tolist()})')
+        export = export[~missing_mask]
+
+    result = export[[
+        'PotNo',
+        col['dss_time'],
+        'dss_event_binary',
+        '_biomarker_group',
+        '_treatment_group',
+        '_treatment_response',
+        '_chemotherapy_regimen',
+        col['age'],
+        '_sex',
+        '_disease_stage',
+        col['grade'],
+        col['logca199'],
+    ]].rename(columns={
+        'PotNo':                 'patient_id',
+        col['dss_time']:         'follow_up_months',
+        'dss_event_binary':      'event_observed',
+        '_biomarker_group':      'biomarker_group',
+        '_treatment_group':      'treatment_group',
+        '_treatment_response':   'treatment_response',
+        '_chemotherapy_regimen': 'chemotherapy_regimen',
+        col['age']:              'patient_age',
+        '_sex':                  'sex',
+        '_disease_stage':        'disease_stage',
+        col['grade']:            'histological_grade',
+        col['logca199']:         'log_ca19_9',
+    })
+
+    out_path = output_dir / 'patient_data.csv'
+    result.to_csv(out_path, index=False)
+    emit(f'Patient data exported: {out_path}  ({len(result)} rows)')
+    return result
+
+
+# ============================================================
+# Themed SVG plots (interactive display / download)
+# ============================================================
+# Additive only -- nothing above this section is touched, and nothing here
+# is called by main() or the CLI, so `python statistics.py` keeps producing
+# exactly the same PNGs it always has. These are for a UI (e.g. the Streamlit
+# pipeline app) that wants a dark-themed plot on screen and a light-themed
+# SVG for download, using the same validated categorical palette (blue/orange,
+# slots 1-2) and chart-chrome tokens as the rest of the project's UI work.
+PLOT_THEMES = {
+    'dark': {
+        'text':    '#ffffff',  # all text -- titles, axis/tick labels, legend, at-risk table
+        'muted':   '#ffffff',
+        'grid':    '#2c2c2a',
+        'axis':    '#383835',  # spines
+        'low':     '#d95926',  # categorical slot 2 (orange)
+        'high':    '#3987e5',  # categorical slot 1 (blue)
+    },
+    'light': {
+        'text':    '#0b0b0b',
+        'muted':   '#898781',
+        'grid':    '#e1e0d9',
+        'axis':    '#c3c2b7',
+        'low':     '#eb6834',
+        'high':    '#2a78d6',
+    },
+}
+
+
+def _style_axes(fig, theme):
+    """Recolor every axes already drawn on `fig` to match `theme` (a
+    PLOT_THEMES entry) -- title/tick/spine/grid/legend/text colors. Figure
+    and axes backgrounds are left transparent (no fill), so the plot blends
+    into whatever page/card it's placed on rather than drawing its own
+    background rectangle. Applied after a figure is built, so it works on
+    any figure produced by km_plot()/CoxPHFitter.plot() without changing how
+    those functions draw the data itself.
+    """
+    fig.patch.set_alpha(0)
+    for ax in fig.axes:
+        ax.patch.set_alpha(0)
+        if ax.title.get_text():
+            ax.title.set_color(theme['text'])
+        ax.xaxis.label.set_color(theme['muted'])
+        ax.yaxis.label.set_color(theme['muted'])
+        ax.tick_params(colors=theme['muted'])
+        for spine in ax.spines.values():
+            spine.set_color(theme['axis'])
+        ax.grid(color=theme['grid'], linewidth=0.6, alpha=0.8)
+        for text in ax.texts:  # includes the KM at-risk-count annotations
+            text.set_color(theme['text'])
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.get_frame().set_alpha(0)
+            legend.get_frame().set_edgecolor(theme['axis'])
+            for t in legend.get_texts():
+                t.set_color(theme['text'])
+
+
+def fig_to_svg(fig):
+    """Serializes `fig` to standalone, background-transparent SVG markup
+    that scales with its container.
+    """
+    buf = StringIO()
+    fig.savefig(buf, format='svg', bbox_inches='tight', transparent=True)
+    svg = buf.getvalue()
+    return re.sub(r'<svg ', '<svg style="width:100%;height:auto;display:block;" ', svg, count=1)
+
+
+def themed_km_figure(panels, time_col, event_col, group_col, group_labels, theme, suptitle=None, figsize=None):
+    """Builds a 1..N-panel Kaplan-Meier figure styled for `theme`, reusing
+    km_plot() unmodified for the actual survival-curve fitting/log-rank test
+    in each panel -- only the color scheme and chrome differ from the plain
+    PNG versions run_nat_cohort_analysis()/run_upfront_cohort_analysis()
+    save to disk.
+    panels: list of (dataframe, panel_title) pairs, one per subplot, sharing
+    the same time/event/group columns and group_labels.
+    """
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=figsize or (6 * n, 5.2))
+    axes = [axes] if n == 1 else list(axes)
+    colors = (theme['low'], theme['high'])
+    for ax, (df, title) in zip(axes, panels):
+        km_plot(df, time_col, event_col, group_col, group_labels, title=title, ax=ax, colors=colors)
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=13, y=1.02, color=theme['text'])
+    plt.tight_layout()
+    _style_axes(fig, theme)
+    return fig
+
+
+def themed_forest_figure(mv_data, time_col, event_col, covariates, title, theme):
+    """Fits a fresh multivariable CoxPHFitter -- the same call
+    multivariable_cox_table() makes -- and returns a themed hazard-ratio
+    forest plot Figure, or None if there are too few events or the fit
+    fails to converge (mirroring multivariable_cox_table()'s own checks).
+    """
+    subset = mv_data[[time_col, event_col] + covariates].dropna()
+    if subset[event_col].sum() < MIN_EVENTS_FOR_COX:
+        return None
+    cph = CoxPHFitter()
+    try:
+        cph.fit(subset, duration_col=time_col, event_col=event_col)
+    except Exception:
+        return None
+    fig, ax = plt.subplots(figsize=(8, max(3, 0.6 * len(covariates) + 1.5)))
+    # lifelines' cph.plot() defaults its errorbar color to c="k" internally
+    # (via setdefault) and draws its own HR=1 reference line in black -- pass
+    # `c` (not `color`, which collides with that default) for the markers,
+    # then recolor the reference line (the one LineCollection it adds to
+    # ax.collections) to match the theme.
+    cph.plot(hazard_ratios=True, ax=ax, c=theme['high'], markerfacecolor=theme['high'])
+    ax.set_title(title, color=theme['text'])
+    for coll in ax.collections:
+        coll.set_color(theme['muted'])
+    plt.tight_layout()
+    _style_axes(fig, theme)
+    return fig
+
+
+# ============================================================
 # Main
 # ============================================================
-def main(active_biomarker=ACTIVE_BIOMARKER):
+def results_dir_for(active_biomarker, dichotomization='fixed'):
+    """The output folder main() writes/reads for a given biomarker +
+    dichotomization method. The 'fixed' (default) method keeps today's
+    exact path (results/<biomarker>/) for CLI/back-compat; the two
+    sample-derived methods get their own sub-folder so switching methods
+    never overwrites another method's results for the same biomarker.
+    """
+    base = RESULTS_DIR / active_biomarker
+    return base if dichotomization == 'fixed' else base / dichotomization
+
+
+def main(active_biomarker=ACTIVE_BIOMARKER, dichotomization='fixed'):
     global _LOG_FILE
 
     if active_biomarker not in BIOMARKER_CONFIGS:
@@ -738,10 +987,11 @@ def main(active_biomarker=ACTIVE_BIOMARKER):
     biomarker_name = bm['name']
     col = build_column_map(biomarker_col)
 
-    # Output folder is named after the active biomarker, with one
-    # sub-folder per cohort, so different runs/cohorts never clobber
-    # each other's figures/tables/logs.
-    base_output_dir = RESULTS_DIR / active_biomarker
+    # Output folder is named after the active biomarker (and, for a
+    # sample-derived dichotomization, the method too), with one sub-folder
+    # per cohort, so different runs/cohorts/methods never clobber each
+    # other's figures/tables/logs.
+    base_output_dir = results_dir_for(active_biomarker, dichotomization)
     nat_dir = base_output_dir / 'NAT_cohort'
     upfront_dir = base_output_dir / 'Upfront_surgery_cohort'
     nat_dir.mkdir(parents=True, exist_ok=True)
@@ -754,20 +1004,25 @@ def main(active_biomarker=ACTIVE_BIOMARKER):
         emit(f'Active biomarker: {biomarker_name}  ->  column: {biomarker_col}')
         emit(f'Output folder: {base_output_dir}')
 
-        df_raw = load_data()
+        df_raw = load_data(dichotomization=dichotomization)
 
         run_nat_cohort_analysis(df_raw, col, biomarker_name, active_biomarker, nat_dir)
         run_upfront_cohort_analysis(df_raw, col, biomarker_name, active_biomarker, upfront_dir)
+        export_patient_data(df_raw, col, base_output_dir)
 
         emit()
         emit(f'Done. NAT cohort results:      {nat_dir}')
         emit(f'Done. Upfront surgery results: {upfront_dir}')
+        emit(f'Done. Patient data export:     {base_output_dir / "patient_data.csv"}')
 
     _LOG_FILE = None
 
 
 if __name__ == '__main__':
-    # Optional: pass a biomarker key on the command line to override
-    # ACTIVE_BIOMARKER, e.g.  python MMP8_NAT_analysis.py MMP8
+    # Optional: pass a biomarker key, and/or a dichotomization method key
+    # (see DICHOTOMIZATION_METHODS), on the command line to override the
+    # defaults, e.g.  python statistics.py MMP8            (biomarker only)
+    #                 python statistics.py COL_4_stroma median
     chosen = sys.argv[1] if len(sys.argv) > 1 else ACTIVE_BIOMARKER
-    main(chosen)
+    method = sys.argv[2] if len(sys.argv) > 2 else 'fixed'
+    main(chosen, dichotomization=method)

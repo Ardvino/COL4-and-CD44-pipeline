@@ -1,6 +1,6 @@
 # ── Entire ignored folders ─────────────────────────────────────────────────
 tumor_marker_app/
-statistics/results/
+pipeline_app/statistics/results/
 
 # ── Data files ─────────────────────────────────────────────────────────────
 **/*.xlsx

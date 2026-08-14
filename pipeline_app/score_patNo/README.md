@@ -50,7 +50,7 @@ Rows are sorted by patient number (natural order, so `9` < `10` < `100`).
 ## Running
 
 ```bash
-cd score_patNo
+cd pipeline_app/score_patNo
 python score_patno.py
 ```
 
