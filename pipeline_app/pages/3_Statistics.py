@@ -1,3 +1,4 @@
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -7,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _pipeline_loader import load_statistics  # noqa: E402
+from _pipeline_loader import load_statistics, PIPELINE_ROOT  # noqa: E402
 from _ui import inject_base_css  # noqa: E402
 
 stats = load_statistics()
@@ -50,6 +51,36 @@ st.write(
     "to upfront surgery."
 )
 
+st.subheader("Hand-off from Score Patient Numbers")
+score_patno_output = PIPELINE_ROOT / "score_patNo" / "patient_scores.xlsx"
+local_scores = stats.SCORES_PATH
+
+if score_patno_output.exists() and local_scores.exists():
+    spn_mtime = score_patno_output.stat().st_mtime
+    local_mtime = local_scores.stat().st_mtime
+    if spn_mtime > local_mtime:
+        st.warning(
+            f"`statistics/data/patient_scores.xlsx` is older "
+            f"({datetime.fromtimestamp(local_mtime):%Y-%m-%d %H:%M}) than the Score Patient "
+            f"Numbers stage's output ({datetime.fromtimestamp(spn_mtime):%Y-%m-%d %H:%M}). "
+            f"This stage reads its own local copy — sync it if you've re-run that stage since "
+            f"(e.g. added a new marker's score file, like GATA6)."
+        )
+        if st.button("Sync from Score Patient Numbers output"):
+            shutil.copyfile(score_patno_output, local_scores)
+            st.success("Copied. Re-run the analysis below to use the refreshed scores.")
+            st.rerun()
+    else:
+        st.success("`statistics/data/patient_scores.xlsx` is up to date with the Score Patient Numbers stage's output.")
+elif not local_scores.exists():
+    st.error(
+        f"`statistics/data/patient_scores.xlsx` is missing — run the Score Patient Numbers stage "
+        f"first, or copy `patient_scores.xlsx` into `statistics/data/`."
+    )
+    st.stop()
+else:
+    st.info("Score Patient Numbers stage hasn't been run yet in this session — using the existing local copy.")
+
 col1, col2 = st.columns(2)
 with col1:
     biomarker_key = st.selectbox(
@@ -75,9 +106,16 @@ with col2:
 base_dir = stats.results_dir_for(biomarker_key, dichotomization)
 nat_dir = base_dir / "NAT_cohort"
 upfront_dir = base_dir / "Upfront_surgery_cohort"
+log_path = base_dir / "analysis_log.txt"
 
-if base_dir.exists():
-    log_mtime = datetime.fromtimestamp((base_dir / "analysis_log.txt").stat().st_mtime)
+# Checked via log_path (this method's own results), not base_dir -- for a
+# non-'fixed' method, base_dir is a subfolder of the biomarker's root
+# (results/<biomarker>/<method>/), but 'fixed' results sit directly in
+# results/<biomarker>/. So the biomarker's root folder can already exist
+# (as the parent of another method's subfolder) even when this exact
+# method's own analysis_log.txt has never been written.
+if log_path.exists():
+    log_mtime = datetime.fromtimestamp(log_path.stat().st_mtime)
     st.caption(
         f"Existing results for **{stats.BIOMARKER_CONFIGS[biomarker_key]['name']}** "
         f"({stats.DICHOTOMIZATION_METHODS[dichotomization]}) — last generated {log_mtime:%Y-%m-%d %H:%M}."
@@ -88,14 +126,12 @@ if st.button("Run analysis", type="primary"):
         stats.main(biomarker_key, dichotomization=dichotomization)
     st.success("Done.")
 
-if not base_dir.exists():
+if not log_path.exists():
     st.info("Click **Run analysis** to generate results for this biomarker.")
     st.stop()
 
-log_path = base_dir / "analysis_log.txt"
-if log_path.exists():
-    with st.expander("Full run log (includes concordance & proportional-hazards diagnostics)"):
-        st.text(log_path.read_text(encoding="utf-8"))
+with st.expander("Full run log (includes concordance & proportional-hazards diagnostics)"):
+    st.text(log_path.read_text(encoding="utf-8"))
 
 st.info(
     "**Caveats to keep in mind:** small subgroups (e.g. strong NAT responders) give wide, "
@@ -170,6 +206,9 @@ def _show_csv(dir_path, filename, caption=None):
 
 
 def render_nat_cohort():
+    st.subheader("Baseline characteristics")
+    _show_csv(nat_dir, "baseline_characteristics.csv")
+
     st.subheader("Biomarker vs clinical variables (chi-square)")
     _show_csv(
         nat_dir, "chi_square_results.csv",
@@ -210,6 +249,16 @@ def render_nat_cohort():
         key_prefix=f"forest-nat-{biomarker_key}", file_slug=f"ForestPlot_{biomarker_key}_NAT",
     )
 
+    if (nat_dir / "cox_univariable_continuous_NAT.csv").exists():
+        st.subheader("Cox regression — continuous exposure")
+        st.caption(
+            "Fit on the raw (non-dichotomized) score rather than the low/high split above — "
+            "matching how Franklin et al. modeled CD44s in their own multivariable model, "
+            "since dichotomizing a continuous score can lose statistical power."
+        )
+        _show_csv(nat_dir, "cox_univariable_continuous_NAT.csv", "Univariable")
+        _show_csv(nat_dir, "cox_multivariable_continuous_NAT.csv", "Multivariable, adjusted")
+
     st.subheader("NAT response by chemotherapy regimen")
     resp_labels = {1: "Strong response (<=10%)", 0: "Weak response (>=11%)"}
     render_themed_plot(
@@ -227,6 +276,9 @@ def render_nat_cohort():
 
 
 def render_upfront_cohort():
+    st.subheader("Baseline characteristics")
+    _show_csv(upfront_dir, "baseline_characteristics.csv")
+
     st.subheader("Biomarker vs clinical variables (chi-square)")
     _show_csv(upfront_dir, "chi_square_results.csv")
 
@@ -253,6 +305,16 @@ def render_upfront_cohort():
         ),
         key_prefix=f"forest-upfront-{biomarker_key}", file_slug=f"ForestPlot_{biomarker_key}_upfront",
     )
+
+    if (upfront_dir / "cox_univariable_continuous_upfront.csv").exists():
+        st.subheader("Cox regression — continuous exposure")
+        st.caption(
+            "Fit on the raw (non-dichotomized) score rather than the low/high split above — "
+            "matching how Franklin et al. modeled CD44s in their own multivariable model, "
+            "since dichotomizing a continuous score can lose statistical power."
+        )
+        _show_csv(upfront_dir, "cox_univariable_continuous_upfront.csv", "Univariable")
+        _show_csv(upfront_dir, "cox_multivariable_continuous_upfront.csv", "Multivariable, adjusted")
 
     st.subheader("Group summary")
     _show_csv(upfront_dir, "group_summary.csv")

@@ -13,6 +13,11 @@ DEFAULT_DATA_DIR = BASE_DIR / "data"
 DEFAULT_MAP_FILE_NAME = "tma_map_replaced.xlsx"
 DEFAULT_OUTPUT_FILE = BASE_DIR / "patient_scores.xlsx"
 
+# Filename suffixes flagging a score file whose scale differs from the
+# shared 0-3 IHC intensity grade the other score files use -- see the
+# Highest_Score note in run_score_patno()'s docstring.
+NON_IHC_SCALE_SUFFIXES = ("_percentage", "_hscore")
+
 
 @dataclass
 class ScorePatNoResult:
@@ -25,6 +30,7 @@ class ScorePatNoResult:
     sheet_name_fixes: list            # [(map_sheet, score_file_label, score_sheet), ...] — see _normalize_sheet_key
     per_score_tables: dict            # {label: DataFrame} — one sheet per score file
     summary_table: object             # DataFrame — All_Scores_Summary
+    hscore_summary_table: object      # DataFrame or None — H_Scores_Summary (Patient_No + each "_hscore" column)
     output_file: Path
 
 
@@ -128,6 +134,17 @@ def run_score_patno(data_dir=None, map_file=None, output_file=None):
     (identifier) are excluded. Duplicate cores for the same patient are
     pivoted into Score/Score_2/... plus a Highest_Score column. Writes one
     sheet per score file plus an All_Scores_Summary sheet to `output_file`.
+
+    A score file named with a "_percentage" suffix (e.g.
+    "CD44_SFF_percentage.xlsx") is treated as a % positive tumor cells score
+    (0-100), and one with an "_hscore" suffix (e.g. "CD44_SFF_hscore.xlsx")
+    as a classic H-score (0-300) -- both are different scales from the 0-3
+    IHC intensity grade the other score files use. Each still gets its own
+    sheet/column like any other score file, but is excluded from the
+    All_Scores_Summary sheet's cross-file Highest_Score column, since mixing
+    scales into that max would make it meaningless (a 0-300 H-score would
+    always dominate a 0-3 max). Add further suffixes to NON_IHC_SCALE_SUFFIXES
+    below for any other non-0-3-scale score file.
     """
     data_dir = Path(data_dir) if data_dir else DEFAULT_DATA_DIR
     map_file_name = Path(map_file).name if map_file else DEFAULT_MAP_FILE_NAME
@@ -211,8 +228,54 @@ def run_score_patno(data_dir=None, map_file=None, output_file=None):
         .sort_values("Patient_No", key=lambda s: s.map(_natural_key))
         .reset_index(drop=True)
     )
-    summary_df["Highest_Score"] = summary_df[score_labels].max(axis=1)
+    # Cross-file Highest_Score only makes sense across labels on the same
+    # measurement scale (0-3 IHC intensity). A label ending in one of
+    # NON_IHC_SCALE_SUFFIXES (e.g. "_percentage" -> 0-100, "_hscore" -> 0-300)
+    # is on a different scale instead -- folding it into this max would just
+    # make Highest_Score echo that label's value rather than report a
+    # meaningful combined IHC intensity score, so such labels are excluded
+    # here (they still get their own sheet/column).
+    ihc_scale_labels = [
+        l for l in score_labels
+        if not l.lower().endswith(NON_IHC_SCALE_SUFFIXES)
+    ]
+    summary_df["Highest_Score"] = summary_df[ihc_scale_labels].max(axis=1)
     write_sheet(wb_out, "All_Scores_Summary", summary_df)
+
+    # H_Scores_Summary: a cross-marker export for just the classic H-score
+    # (0-300) labels -- e.g. CD44_SFF_hscore and GATA6_hscore each get their
+    # own column(s) here, one row per patient, so H-scores across markers can
+    # be compared/exported without wading through the IHC-intensity and
+    # percentage columns in All_Scores_Summary. Omitted entirely (both the
+    # sheet and the returned table) when the cohort has no "_hscore" file yet.
+    #
+    # Built from per_score_tables rather than summary_df: summary_df already
+    # collapsed every core down to a single per-patient max via
+    # combined.groupby("Patient_No").max(), so a patient with two cores would
+    # show only one (the higher) H-score here instead of both. per_score_tables
+    # still has each core as Score / Score_2 / ... (see flatten_duplicates),
+    # so that per-core detail is preserved per marker.
+    hscore_labels = [l for l in score_labels if l.lower().endswith("_hscore")]
+    hscore_summary_df = None
+    if hscore_labels:
+        for label in hscore_labels:
+            tbl = per_score_tables[label].copy()
+            rename = {}
+            for c in tbl.columns:
+                if c == "Patient_No":
+                    continue
+                elif c == "Score":
+                    rename[c] = label
+                elif c == "Highest_Score":
+                    rename[c] = f"{label}_Highest"
+                else:  # Score_2, Score_3, ...
+                    rename[c] = f"{label}_{c.split('_', 1)[1]}"
+            tbl = tbl.rename(columns=rename)
+            hscore_summary_df = tbl if hscore_summary_df is None else hscore_summary_df.merge(tbl, on="Patient_No", how="outer")
+        hscore_summary_df = hscore_summary_df.sort_values(
+            "Patient_No", key=lambda s: s.map(_natural_key)
+        ).reset_index(drop=True)
+        write_sheet(wb_out, "H_Scores_Summary", hscore_summary_df)
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     wb_out.save(output_file)
@@ -226,13 +289,17 @@ def run_score_patno(data_dir=None, map_file=None, output_file=None):
         sheet_name_fixes=sheet_name_fixes,
         per_score_tables=per_score_tables,
         summary_table=summary_df,
+        hscore_summary_table=hscore_summary_df,
         output_file=output_file,
     )
 
 
 def _print_result(result):
     print(f"Saved: {result.output_file}")
-    print(f"Sheets: {result.score_labels + ['All_Scores_Summary']}")
+    sheets = result.score_labels + ["All_Scores_Summary"]
+    if result.hscore_summary_table is not None:
+        sheets.append("H_Scores_Summary")
+    print(f"Sheets: {sheets}")
     if result.sheet_name_fixes:
         print(f"\nNote: {len(result.sheet_name_fixes)} sheet-name mismatch(es) tolerated "
               f"(matched anyway by normalizing spaces/underscores):")

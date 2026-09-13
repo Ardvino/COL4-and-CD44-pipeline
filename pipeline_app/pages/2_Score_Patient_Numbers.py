@@ -80,12 +80,19 @@ m3.metric("Patients after filtering (excl. x/i)", result.rows_after_filter)
 m4.metric("Patients with duplicate cores", result.duplicate_patient_count)
 
 st.markdown("**Output preview** — `patient_scores.xlsx`")
-tabs = st.tabs(result.score_labels + ["All_Scores_Summary"])
-for tab, label in zip(tabs[:-1], result.score_labels):
+sheet_names = result.score_labels + ["All_Scores_Summary"]
+if result.hscore_summary_table is not None:
+    sheet_names += ["H_Scores_Summary"]
+tabs = st.tabs(sheet_names)
+for tab, label in zip(tabs, result.score_labels):
     with tab:
         st.dataframe(result.per_score_tables[label], width="stretch", hide_index=True)
-with tabs[-1]:
+with tabs[len(result.score_labels)]:
     st.dataframe(result.summary_table, width="stretch", hide_index=True)
+if result.hscore_summary_table is not None:
+    with tabs[-1]:
+        st.caption("Each patient's H-score (0-300 scale) for every marker scored that way, including every core (Score, Score_2, ...) plus a per-marker Highest — a focused cross-marker export, kept separate from All_Scores_Summary since that sheet only reports each marker's max core.")
+        st.dataframe(result.hscore_summary_table, width="stretch", hide_index=True)
 
 from openpyxl import Workbook  # noqa: E402
 
@@ -94,6 +101,8 @@ wb_out.remove(wb_out.active)
 for label in result.score_labels:
     spn.write_sheet(wb_out, label, result.per_score_tables[label])
 spn.write_sheet(wb_out, "All_Scores_Summary", result.summary_table)
+if result.hscore_summary_table is not None:
+    spn.write_sheet(wb_out, "H_Scores_Summary", result.hscore_summary_table)
 buf = BytesIO()
 wb_out.save(buf)
 st.download_button(
@@ -103,3 +112,16 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 st.caption(f"Also saved to `{result.output_file}` (same file the standalone script writes).")
+
+if result.hscore_summary_table is not None:
+    hscore_wb = Workbook()
+    hscore_wb.remove(hscore_wb.active)
+    spn.write_sheet(hscore_wb, "H_Scores_Summary", result.hscore_summary_table)
+    hscore_buf = BytesIO()
+    hscore_wb.save(hscore_buf)
+    st.download_button(
+        "Download H_Scores_Summary.xlsx (patient x H-score marker, standalone)",
+        data=hscore_buf.getvalue(),
+        file_name="H_Scores_Summary.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )

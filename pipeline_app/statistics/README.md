@@ -6,11 +6,12 @@ This script (`MMP8_NAT_analysis.py`) replicates the statistical analysis from:
 > immunoexpression in pancreatic ductal adenocarcinoma after neoadjuvant
 > therapy.* Scientific Reports.
 
-...and generalizes it so any of five immunohistochemistry biomarker scores
-(MMP-8, two CD44 scores, a CD44 tumor-intensity variant, COL-4 stroma) can be
-plugged in and run through the same pipeline. It is meant to be read
-side-by-side with the code: each section below matches a function or block
-in the script, in the order the script executes them.
+...and generalizes it so any of six immunohistochemistry biomarker scores
+(MMP-8, two CD44 scores, a CD44 tumor-intensity variant, COL-4 stroma, and a
+CD44 % positive tumor cells score) can be plugged in and run through the
+same pipeline. It is meant to be read side-by-side with the code: each
+section below matches a function or block in the script, in the order the
+script executes them.
 
 ---
 
@@ -40,7 +41,7 @@ and treatment context differ between them:
 | File | Role |
 |---|---|
 | `data/sorted_data.xlsx` | Main clinical dataset: one row per patient, treatment, staging, and survival/outcome columns. |
-| `data/patient_scores.xlsx` (sheet `All_Scores_Summary`) | Biomarker immunohistochemistry scores per patient (`CD44_SFF_inflam_cells`, `CD44_SFF_tumor_int`, `CD44_VFF_tumor_int`, `COL_4_stroma`, `Highest_Score`). Joined onto the clinical data by patient number (`PotNo` ↔ `Patient_No`). |
+| `data/patient_scores.xlsx` (sheet `All_Scores_Summary`) | Biomarker immunohistochemistry scores per patient (`CD44_SFF_inflam_cells`, `CD44_SFF_tumor_int`, `CD44_VFF_tumor_int`, `COL_4_stroma`, `CD44_SFF_percentage`, `Highest_Score`). Joined onto the clinical data by patient number (`PotNo` ↔ `Patient_No`). |
 
 `MMP8` itself is the exception: it already has a pre-computed binary column
 (`MMP8inCAvahvin_low_vs_high`) in `sorted_data.xlsx`, so it does not go
@@ -48,14 +49,24 @@ through the dichotomization step described next.
 
 ### How biomarkers become "low" / "high"
 
-Each score in `patient_scores.xlsx` is a 4-tier IHC intensity grade
-(0 = non-detectable, 1 = low, 2 = moderate, 3 = high), the same scale used
-for MMP-8 in Kesti et al. (2025). That paper dichotomizes MMP-8 as scores
-0–1 = low vs. 2–3 = high — a **fixed, pre-specified cut-point based on what
-the categories mean**, not derived from the sample. `load_data()` applies
-that identical rule (`BIOMARKER_HIGH_CUTOFF`, currently `score >= 2` for
-all four CD44/COL-4 scores) to every biomarker, and the same cut-point is
-used for both the NAT and upfront-surgery cohorts.
+Four of the scores in `patient_scores.xlsx` (plus `Highest_Score`, their
+cross-file max) are a 4-tier IHC intensity grade (0 = non-detectable,
+1 = low, 2 = moderate, 3 = high), the same scale used for MMP-8 in Kesti et
+al. (2025). That paper dichotomizes MMP-8 as scores 0–1 = low vs. 2–3 = high
+— a **fixed, pre-specified cut-point based on what the categories mean**,
+not derived from the sample. `load_data()` applies that identical rule
+(`BIOMARKER_HIGH_CUTOFF`, `score >= 2` for the four CD44/COL-4 IHC scores)
+to those biomarkers, and the same cut-point is used for both the NAT and
+upfront-surgery cohorts.
+
+`CD44_SFF_percentage` is different: it's scored as % positive tumor cells
+(0-100), not a 0-3 IHC grade, so both its valid range (`BIOMARKER_VALID_RANGE`)
+and cut-point are configured separately from the other four. Its
+`BIOMARKER_HIGH_CUTOFF` entry (`>=10%`) is only a placeholder for the
+`'fixed'` dichotomization method — unlike `score >= 2` for the IHC scores,
+it isn't a clinically pre-validated cut-point for this project. Use
+`dichotomization='p75'` for this biomarker instead (75th-percentile split,
+per Franklin et al.).
 
 An earlier version of this script instead computed each score's median
 *within NAT patients* and split on that. This was dropped: these are
@@ -68,11 +79,48 @@ specific biomarker, edit its entry in `BIOMARKER_HIGH_CUTOFF` — just pick
 it for a stated reason (e.g. a scoring protocol), not by scanning for the
 best-looking split, which biases the result.
 
+**Tie-aware `median`/`p75` cutoffs**: these two methods compute a quantile
+of the sample (e.g. the 75th percentile for `p75`) and are *meant* to
+produce a high-group of roughly `1 - q` of the sample (~25% for p75). On
+coarse/rounded scores, though, the quantile value itself is often shared by
+many patients — e.g. `CD44_SFF_percentage` is scored in 5-point increments
+by eye, and in this sample 26% of patients tie exactly at the computed p75
+value (80%). Always breaking ties toward "high" (`>=`) would sweep all of
+them in, giving a ~48% high group — effectively a median split instead of a
+quartile split. `load_data()` instead picks whichever comparison (`>=` or
+`>` at the cutoff) lands the actual high-fraction closer to the quantile's
+intended fraction, and logs which one it picked and how many patients were
+affected (`tied at cutoff: N, counted as low/high`). This only applies to
+`median`/`p75` — `fixed` always means `score >= cutoff` by definition.
+
+**Continuous-exposure Cox regression for `CD44_SFF_percentage`**:
+Franklin et al.'s own multivariable Cox model entered CD44s as a
+**continuous** covariate ("per 25% positive cells", HR 1.9, p = 0.015 in
+their Table 2), not the dichotomized low/high split used for their KM plot
+— dichotomizing a continuous score is known to lose statistical power.
+`BIOMARKER_CONTINUOUS` in `statistics.py` opts `CD44_SFF_percentage` into a
+second, additive set of Cox tables fit on the raw score (scaled per 25
+percentage points to match Franklin's units):
+`cox_univariable_continuous_{NAT,upfront}.csv` and
+`cox_multivariable_continuous_{NAT,upfront}.csv` (+ forest plot), alongside
+— not replacing — the usual binarized low/high tables. No other biomarker
+is affected.
+
+**Wilcoxon–Breslow alongside log-rank**: every KM plot now reports both a
+log-rank p-value and a Wilcoxon–Breslow p-value (`lifelines`'
+`weightings='wilcoxon'`) in its title. Log-rank weights every event equally
+over follow-up; Wilcoxon–Breslow weights earlier events more heavily, so
+it's more sensitive to a survival difference concentrated early on — in
+Franklin et al., osteopontin's log-rank was not significant (p = 0.0858)
+but its Wilcoxon–Breslow was (p = 0.0322). The two tests can legitimately
+disagree; both are shown rather than picking one.
+
 **Data cleanup**: a few raw readings in `patient_scores.xlsx` fall outside
-the valid 0–3 range (found: PotNo 8, 56, 1345 — likely data-entry
-sentinels, e.g. `7`, `9`). `load_data()` now treats any such out-of-range
-value as missing rather than as an extreme "high" score, and logs which
-patients were affected.
+the valid range for their biomarker (found: PotNo 8, 56, 1345 outside 0–3 —
+likely data-entry sentinels, e.g. `7`, `9`). `load_data()` now treats any
+such out-of-range value as missing rather than as an extreme "high" score,
+and logs which patients were affected. The valid range is per-biomarker
+(`BIOMARKER_VALID_RANGE`) since `CD44_SFF_percentage` uses 0–100, not 0–3.
 
 **Verify against the printed line**
 `<biomarker>: cutoff=score>=X  low=N  high=N` — compare against a manual
@@ -197,7 +245,7 @@ python MMP8_NAT_analysis.py COL_4_stroma        # override: run COL-4 stroma ins
 ```
 
 Valid keys: `MMP8`, `CD44_SFF_inflam_cells`, `CD44_SFF_tumor_int`,
-`CD44_VFF_tumor_int`, `COL_4_stroma`.
+`CD44_VFF_tumor_int`, `COL_4_stroma`, `CD44_SFF_percentage`.
 
 ---
 
