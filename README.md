@@ -16,6 +16,8 @@ YP-number map            patient score table       KM + Cox regression
 
 All three stages live inside **`pipeline_app/`**, along with a Streamlit app (`pipeline_app/app.py`) that runs the real pipeline scripts end-to-end and shows each stage's inputs, transformation, and outputs inline — see [`pipeline_app/README.md`](pipeline_app/README.md). Each stage also still runs standalone as a plain script (see **Modules** below).
 
+> **Note:** this repository ships code only. The `.xlsx`/`.csv`/`.png`/`.pdf` data and result files shown in the tree below (e.g. `merged_map.xlsx`, `patient_scores.xlsx`, `results/`) are gitignored patient/clinical data and have never been committed. To run the pipeline yourself, supply your own files in the shapes documented by each stage's README (linked below) — see [`pipeline_app/README.md`](pipeline_app/README.md#bringing-your-own-data) for a quick-start pointer.
+
 ---
 
 ## Directory structure
@@ -98,7 +100,7 @@ python score_patno.py
 
 Replication of statistical methods from Kesti et al. (2025) (*Scientific Reports*). Analyses overall survival (OS) in NAT-treated and upfront-surgery PDAC patients stratified by a chosen biomarker and NAT response. (Kesti et al. used disease-specific survival (DSS) as the endpoint — this pipeline uses OS instead.)
 
-The script supports multiple biomarkers (`MMP8`, `CD44_SFF_inflam_cells`, `CD44_SFF_tumor_int`, `CD44_VFF_tumor_int`, `COL_4_stroma`) and three low/high dichotomization methods (`fixed`, `median`, `p75` — see `DICHOTOMIZATION_METHODS` in the script).
+The script supports multiple biomarkers (see `BIOMARKER_CONFIGS` in `statistics.py` for the current list) and three low/high dichotomization methods (`fixed`, `median`, `p75` — see `DICHOTOMIZATION_METHODS` in the script).
 
 **Run:**
 ```bash
@@ -108,8 +110,10 @@ python statistics.py MMP8                # override: run MMP-8 instead
 python statistics.py COL_4_stroma median # override: biomarker + dichotomization method
 ```
 
-**Requires:** `pandas`, `numpy`, `matplotlib`, `seaborn`, `scipy`, `lifelines`, `openpyxl`
+**Requires:** see [`pipeline_app/requirements.txt`](pipeline_app/requirements.txt).
 
-```bash
-pip install lifelines pandas numpy matplotlib scipy openpyxl
-```
+---
+
+## License
+
+This project is licensed under the MIT License — see [LICENSE](LICENSE).

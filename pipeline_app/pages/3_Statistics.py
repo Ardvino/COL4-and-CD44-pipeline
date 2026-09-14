@@ -1,4 +1,3 @@
-import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +8,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _pipeline_loader import load_statistics, PIPELINE_ROOT  # noqa: E402
-from _ui import inject_base_css  # noqa: E402
+from _ui import inject_base_css, render_glossary_expander, glossary_help, render_scores_handoff  # noqa: E402
 
 stats = load_statistics()
 
@@ -50,36 +49,12 @@ st.write(
     "for patients who received neoadjuvant therapy (NAT) and those who went straight "
     "to upfront surgery."
 )
+render_glossary_expander()
 
 st.subheader("Hand-off from Score Patient Numbers")
-score_patno_output = PIPELINE_ROOT / "score_patNo" / "patient_scores.xlsx"
-local_scores = stats.SCORES_PATH
-
-if score_patno_output.exists() and local_scores.exists():
-    spn_mtime = score_patno_output.stat().st_mtime
-    local_mtime = local_scores.stat().st_mtime
-    if spn_mtime > local_mtime:
-        st.warning(
-            f"`statistics/data/patient_scores.xlsx` is older "
-            f"({datetime.fromtimestamp(local_mtime):%Y-%m-%d %H:%M}) than the Score Patient "
-            f"Numbers stage's output ({datetime.fromtimestamp(spn_mtime):%Y-%m-%d %H:%M}). "
-            f"This stage reads its own local copy — sync it if you've re-run that stage since "
-            f"(e.g. added a new marker's score file, like GATA6)."
-        )
-        if st.button("Sync from Score Patient Numbers output"):
-            shutil.copyfile(score_patno_output, local_scores)
-            st.success("Copied. Re-run the analysis below to use the refreshed scores.")
-            st.rerun()
-    else:
-        st.success("`statistics/data/patient_scores.xlsx` is up to date with the Score Patient Numbers stage's output.")
-elif not local_scores.exists():
-    st.error(
-        f"`statistics/data/patient_scores.xlsx` is missing — run the Score Patient Numbers stage "
-        f"first, or copy `patient_scores.xlsx` into `statistics/data/`."
-    )
-    st.stop()
-else:
-    st.info("Score Patient Numbers stage hasn't been run yet in this session — using the existing local copy.")
+render_scores_handoff(
+    stats.SCORES_PATH, PIPELINE_ROOT / "score_patNo" / "patient_scores.xlsx", key="sync-page3",
+)
 
 col1, col2 = st.columns(2)
 with col1:
@@ -88,6 +63,7 @@ with col1:
         list(stats.BIOMARKER_CONFIGS.keys()),
         format_func=lambda k: stats.BIOMARKER_CONFIGS[k]["name"],
         index=list(stats.BIOMARKER_CONFIGS.keys()).index(stats.ACTIVE_BIOMARKER),
+        help=glossary_help("Biomarker", "MMP-8", "H-score"),
     )
 with col2:
     dichotomization = st.selectbox(
@@ -99,7 +75,8 @@ with col2:
             "which already has a pre-coded binary column. 'Fixed' is the default used "
             "throughout this project's write-ups; the other two are sample-derived, so "
             "switching methods can move the cut-point itself, not just the counts — see "
-            "the run log below for how many patients land exactly on the cut."
+            "the run log below for how many patients land exactly on the cut.\n\n"
+            + glossary_help("Dichotomization / cut-point")
         ),
     )
 
@@ -131,6 +108,7 @@ if not log_path.exists():
     st.stop()
 
 with st.expander("Full run log (includes concordance & proportional-hazards diagnostics)"):
+    st.caption(glossary_help("Concordance", "Proportional-hazards / Schoenfeld residuals"))
     st.text(log_path.read_text(encoding="utf-8"))
 
 st.info(

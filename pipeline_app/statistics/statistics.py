@@ -372,6 +372,7 @@ def build_column_map(biomarker_col, continuous_col=None):
         'margin':    'Onkoleikkausradikaali_tunnus',  # resection margin text: 'R0'/'R1'/'muu' -- more complete than numeric RADIKALITEETTI
         'stage_full': 'STAGE_8th',                 # full AJCC 8th stage text (IA/IB/IIA/IIB/III/IV), vs the binarized 'stage' above
         'adjuvant':  'Postopsytostaatit_tunnus',   # 'Adjuvantti'/'Ei'/'Palliatiivinen' -- adjuvant vs none vs palliative treatment
+        'adjuvant_regimen': 'postopsytost',        # free-text clinical notes on the actual post-op drug regimen(s)/cycles (Finnish) -- unlike NAT's GEMSITABINvsFOLFIRINOX, there's no clean structured regimen column for adjuvant/palliative treatment in the source data
     }
 
 
@@ -517,7 +518,12 @@ def baseline_characteristics_table(df, col, output_dir, filename, is_nat=False):
     _add_categorical_rows(rows, df[col['grade']], 'Grade', cohort_n=n)
     _add_categorical_rows(rows, df[col['margin']], 'Resection margin', cohort_n=n)
     _add_categorical_rows(rows, df[col['stage_full']].map(STAGE_GROUP), 'Stage', cohort_n=n)
-    _add_categorical_rows(rows, df[col['adjuvant']].map({'Adjuvantti': 'Adjuvant', 'Ei': 'None', 'Palliatiivinen': 'Palliative'}),
+    # 'Ei' -> 'No adjuvant treatment', not the bare string 'None' -- pandas'
+    # default read_csv NA values include the literal string "None", so a
+    # category actually meaning "no adjuvant treatment given" would silently
+    # read back as missing data instead, indistinguishable from patients
+    # this field is genuinely unknown for.
+    _add_categorical_rows(rows, df[col['adjuvant']].map({'Adjuvantti': 'Adjuvant', 'Ei': 'No adjuvant treatment', 'Palliatiivinen': 'Palliative'}),
                            'Adjuvant treatment', cohort_n=n)
 
     if is_nat:
@@ -1082,6 +1088,28 @@ def export_patient_data(df_raw, col, output_dir):
     export['_chemotherapy_regimen'] = export[col['regimen']].map({0: 'Gemcitabine', 1: 'FOLFIRINOX'})
     export['_sex']                  = export[col['sex']].map({1: 'Male', 2: 'Female'})
     export['_disease_stage']        = export[col['stage']].map({0: 'Early', 1: 'Advanced'})
+    # Full AJCC 8th edition stage (e.g. IIB, III) -- col['stage'] above is
+    # only the binarized Early/Advanced split used for chi-square/Cox
+    # covariates elsewhere in this script; this keeps the un-collapsed
+    # sub-stage for exports that want the finer distinction.
+    export['_tnm_stage']            = export[col['stage_full']]
+    # Same category mapping used in baseline_characteristics_table() -- kept
+    # in sync here so the wording matches between the two. Deliberately NOT
+    # the bare string 'None': pandas' default read_csv NA values include the
+    # literal string "None", so "no adjuvant treatment given" would silently
+    # read back as missing data otherwise.
+    export['_adjuvant_treatment']   = export[col['adjuvant']].map(
+        {'Adjuvantti': 'Adjuvant', 'Ei': 'No adjuvant treatment', 'Palliatiivinen': 'Palliative'}
+    )
+    # Raw clinical free-text notes on the actual post-op drug regimen(s),
+    # cycle counts, and any later-line changes -- in Finnish, unstructured,
+    # and passed through as-is (no clean structured regimen column exists
+    # for adjuvant/palliative treatment in the source data, unlike NAT's
+    # GEMSITABINvsFOLFIRINOX). Some entries contain a literal U+FFFD
+    # replacement character in place of a Finnish letter (ä/ö) -- that
+    # corruption is already present in the source spreadsheet, not
+    # introduced here.
+    export['_adjuvant_regimen']     = export[col['adjuvant_regimen']]
 
     is_upfront = export[col['nat']] != 1
     export.loc[is_upfront, '_treatment_response']   = ''
@@ -1110,7 +1138,10 @@ def export_patient_data(df_raw, col, output_dir):
         col['age'],
         '_sex',
         '_disease_stage',
+        '_tnm_stage',
         col['grade'],
+        '_adjuvant_treatment',
+        '_adjuvant_regimen',
         col['logca199'],
     ]].rename(columns={
         'PotNo':                 'patient_id',
@@ -1123,7 +1154,10 @@ def export_patient_data(df_raw, col, output_dir):
         col['age']:              'patient_age',
         '_sex':                  'sex',
         '_disease_stage':        'disease_stage',
+        '_tnm_stage':            'tnm_stage',
         col['grade']:            'histological_grade',
+        '_adjuvant_treatment':   'adjuvant_treatment',
+        '_adjuvant_regimen':     'adjuvant_regimen',
         col['logca199']:         'log_ca19_9',
     })
 

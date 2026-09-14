@@ -15,10 +15,17 @@ st.title("CD44 / COL4 Pipeline")
 st.caption("A cockpit for the real TMA scoring & survival-analysis pipeline — every stage's real inputs, transforms, and outputs, in one place.")
 
 st.write(
-    "This app runs the project's actual pipeline scripts against the real data "
-    "files already in this repo (nothing synthetic, nothing uploaded) and shows "
-    "what each stage read, what it did, and what it produced. Use the sidebar to "
-    "open a stage."
+    "This app runs the project's actual pipeline scripts — reading and writing "
+    "real files on disk (nothing synthetic, nothing uploaded) — and shows what "
+    "each stage read, what it did, and what it produced. The status panel below "
+    "shows which stages have data to work with yet. Use the sidebar to open a stage."
+)
+
+st.info(
+    "**New to this repo?** It ships with pipeline code only — no patient data. "
+    "See \"Bringing your own data\" in `pipeline_app/README.md` for what to supply, "
+    "or open **1. Formatting** in the sidebar, which will tell you exactly what's "
+    "missing."
 )
 
 st.markdown(

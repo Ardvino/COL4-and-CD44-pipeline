@@ -7,7 +7,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _pipeline_loader import load_formatting  # noqa: E402
-from _ui import inject_base_css  # noqa: E402
+from _ui import inject_base_css, render_glossary_expander  # noqa: E402
 
 fmt = load_formatting()
 
@@ -21,8 +21,21 @@ st.write(
     "lookup file and substitutes it in place, leaving every other cell and all "
     "formatting untouched."
 )
+render_glossary_expander(["YP-number", "PotNo", "TMA (tissue microarray)"])
 
 st.subheader("Inputs")
+
+missing = [p for p in (fmt.DEFAULT_LOOKUP_FILE, fmt.DEFAULT_MAP_FILE) if not p.exists()]
+if missing:
+    names = ", ".join(f"`{p.relative_to(fmt.BASE_DIR.parent)}`" for p in missing)
+    st.error(
+        f"Missing input file(s): {names}. This is the first pipeline stage — place your "
+        f"raw TMA block map and YP-number lookup table in `formatting/data/` (see the app "
+        f"README's 'Bringing your own data' section for the expected shape), then reload "
+        f"this page."
+    )
+    st.stop()
+
 col1, col2 = st.columns(2)
 
 with col1:

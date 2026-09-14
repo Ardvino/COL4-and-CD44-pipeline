@@ -9,7 +9,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _pipeline_loader import load_score_patno, PIPELINE_ROOT  # noqa: E402
-from _ui import inject_base_css  # noqa: E402
+from _ui import inject_base_css, render_glossary_expander  # noqa: E402
 
 spn = load_score_patno()
 
@@ -23,6 +23,9 @@ st.write(
     "appears twice on the array (duplicate cores), both scores are kept as "
     "`Score` / `Score_2` on the same row, and `Highest_Score` is the max of the two."
 )
+render_glossary_expander([
+    "IHC score", "H-score", "TMA (tissue microarray)", "Score / Score_2 / Highest_Score",
+])
 
 st.subheader("Hand-off from Formatting")
 formatting_output = PIPELINE_ROOT / "formatting" / "data" / "tma_map_replaced.xlsx"
